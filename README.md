@@ -40,57 +40,15 @@ UniFormer以Transformer的风格，有机地统一convolution和self-attention�
 从上表[1]中可以看到，Uniformer在FP32和FP16下的推理延迟都高于ResNet50，而且Uniformer对量化不友好，FP16的推理延迟只有FP32的62.5%。因此，本次复赛的目标是在保证精度的情况下，基于TensorRT优化Uniformer的推理延迟。
 
 #### 图像分类模型
-图像分类任务较为容易，其模型结构也比较简单，在pytorch -> onnx -> tensorrt engine过程中没有遇到什么问题。
-
-#### 目标检测模型
-目标检测相比于图像分类任务更困难，因此它的模型也更加复杂，这也意味着从pytorch模型转成onnx再构建tensorrt egnine会遇到更多的问题。
-
-在pytorch转onnx过程中，需要注意的一点是checkpoint函数。Uniformre的代码使用了checkpoint来减少训练过程中显存的使用，然而onnx并不支持checkpoint这个op，因此`torch.onnx.export`会调用失败。一种解决方案是在config文件中设置`use_checkpoint=False`，不使用checkpoint相关的算子，这样就能成功导出onnx模型了。
-```python
-def forward_features(self, x):
-    out = []
-    x = self.patch_embed1(x)
-    x = self.pos_drop(x)
-    for i, blk in enumerate(self.blocks1):
-        if self.use_checkpoint and i < self.checkpoint_num[0]:
-            x = checkpoint.checkpoint(blk, x)
-        else:
-            x = blk(x)
+模型有一个输入和一个输出，输入的维度是(batch, 3, height, width)， 输出的维度是(batch, 1000)。基于onnx模型构建tensorrt egine时，因为输入的height与width是动态的，所以会遇到下面的问题，报错信息是conv算子的group count没有被输入的channel数整除。
 ```
-
-接下来我们要基于onnx模型构建tensorrt engine。目前遇到下面这两个问题，还没有解决。
-
-模型的输入shape为(b, 3, h, w)，如果只将batch size设置成dynamic，固定height与weight，那么就会遇到padding相关的问题。查了相关资料，猜测是tensorrt不支持2D padding，可能的解决方案是把padding op的input给reshape一下。
-```
-[06/12/2022-14:41:28] [E] Error[4]: [shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2,1])
-[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:780: While parsing node number 349 [Pad -> "754"]:
-[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:781: --- Begin node ---
-[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:782: input: "689"
-input: "752"
-input: "753"
-output: "754"
-name: "Pad_342"
-op_type: "Pad"
-attribute {
-  name: "mode"
-  s: "constant"
-  type: STRING
-}
-
-[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:783: --- End node ---
-[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:785: ERROR: parsers/onnx/ModelImporter.cpp:179 In function parseGraph:
-[6] Invalid Node - Pad_342
-[shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2,1])
-```
-
-如果我们把batch size、height和weight都设置成dynamic shape，那么就会遇到conv op的转换问题。这个节点的输入shape大概是(b, -1, h, w)，
-```
-[06/12/2022-14:27:38] [E] [TRT] parsers/onnx/ModelImporter.cpp:780: While parsing node number 92 [Conv -> "429"]:
-[06/12/2022-14:27:38] [E] [TRT] parsers/onnx/ModelImporter.cpp:781: --- Begin node ---
-[06/12/2022-14:27:38] [E] [TRT] parsers/onnx/ModelImporter.cpp:782: input: "428"
-input: "backbone.blocks1.0.pos_embed.weight"
-input: "backbone.blocks1.0.pos_embed.bias"
-output: "429"
+[06/13/2022-14:53:26] [E] Error[4]: [convolutionNode.cpp::computeOutputExtents::36] Error Code 4: Internal Error (Conv_36: group count must divide input channel count)
+[06/13/2022-14:53:26] [E] [TRT] parsers/onnx/ModelImporter.cpp:780: While parsing node number 36 [Conv -> "370"]:
+[06/13/2022-14:53:26] [E] [TRT] parsers/onnx/ModelImporter.cpp:781: --- Begin node ---
+[06/13/2022-14:53:26] [E] [TRT] parsers/onnx/ModelImporter.cpp:782: input: "369"
+input: "blocks1.0.pos_embed.weight"
+input: "blocks1.0.pos_embed.bias"
+output: "370"
 name: "Conv_36"
 op_type: "Conv"
 attribute {
@@ -125,10 +83,61 @@ attribute {
   type: INTS
 }
 
-[06/12/2022-14:27:38] [E] [TRT] parsers/onnx/ModelImporter.cpp:783: --- End node ---
-[06/12/2022-14:27:38] [E] [TRT] parsers/onnx/ModelImporter.cpp:785: ERROR: parsers/onnx/ModelImporter.cpp:166 In function parseGraph:
+[06/13/2022-14:53:26] [E] [TRT] parsers/onnx/ModelImporter.cpp:783: --- End node ---
+[06/13/2022-14:53:26] [E] [TRT] parsers/onnx/ModelImporter.cpp:785: ERROR: parsers/onnx/ModelImporter.cpp:166 In function parseGraph:
 [6] Invalid Node - Conv_36
+[convolutionNode.cpp::computeOutputExtents::36] Error Code 4: Internal Error (Conv_36: group count must divide input channel count)
 ```
+
+观察onnx计算图可以发现，LayerNorm的输出会被Reshape成一个4维tensor再Transpose(0,3,1,2)后输入给Conv节点，而新的shape是通过Concat得到的。可以看到，图中Concat_33节点的最后一维是-1，经过Transpose后它会被当做channel输入给Conv节点，从而导致上面的错误。
+![](./figures/onnx_conv_error.png)
+观察LayerNorm节点的操作流程，可知该节点输出的shape是(batch, -1, 64)，而64正好等于Conv节点的group，因此我们可以合理猜测将Conv输入的channel设置为LayerNorm输出的最后一维能够解决此问题。通过下面的代码，我们把Conv节点的输入设置成匹配的值，就可以成功构建tensorrt engine了。
+```python
+tmap['1893'].values = np.array([64])
+tmap['1894'].values = np.array([128])
+tmap['1895'].values = np.array([320])
+tmap['1944'].values = np.array([512])
+```
+
+#### 目标检测模型
+目标检测相比于图像分类任务更困难，因此它的模型也更加复杂，这也意味着从pytorch模型转成onnx再构建tensorrt egnine会遇到更多的问题。
+
+在pytorch转onnx过程中，需要注意的一点是checkpoint函数。Uniformre的代码使用了checkpoint来减少训练过程中显存的使用，然而onnx并不支持checkpoint这个op，因此`torch.onnx.export`会调用失败。一种解决方案是在config文件中设置`use_checkpoint=False`，不使用checkpoint相关的算子，这样就能成功导出onnx模型了。
+```python
+def forward_features(self, x):
+    out = []
+    x = self.patch_embed1(x)
+    x = self.pos_drop(x)
+    for i, blk in enumerate(self.blocks1):
+        if self.use_checkpoint and i < self.checkpoint_num[0]:
+            x = checkpoint.checkpoint(blk, x)
+        else:
+            x = blk(x)
+```
+
+接下来我们要基于onnx模型构建tensorrt engine。因为模型的输入shape为(batch, 3, height, width)，动态的height与width会遇到与图像分类模型相同的问题，可以按照上面的方法解决。除此之外还遇到padding相关的问题。查了相关资料，猜测是tensorrt不支持2D padding，可能的解决方案是把padding op的input给reshape一下。
+```
+[06/12/2022-14:41:28] [E] Error[4]: [shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2,1])
+[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:780: While parsing node number 349 [Pad -> "754"]:
+[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:781: --- Begin node ---
+[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:782: input: "689"
+input: "752"
+input: "753"
+output: "754"
+name: "Pad_342"
+op_type: "Pad"
+attribute {
+  name: "mode"
+  s: "constant"
+  type: STRING
+}
+
+[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:783: --- End node ---
+[06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:785: ERROR: parsers/onnx/ModelImporter.cpp:179 In function parseGraph:
+[6] Invalid Node - Pad_342
+[shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2,1])
+```
+
 
 ## 优化过程
 ---
