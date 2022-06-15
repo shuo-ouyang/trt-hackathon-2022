@@ -115,9 +115,9 @@ def forward_features(self, x):
             x = blk(x)
 ```
 
-接下来我们要基于onnx模型构建tensorrt engine。因为模型的输入shape为(batch, 3, height, width)，动态的height与width会遇到与图像分类模型相同的问题，可以按照上面的方法解决。除此之外还遇到padding相关的问题。查了相关资料，猜测是tensorrt不支持2D padding，可能的解决方案是把padding op的input给reshape一下。
+接下来我们要基于onnx模型构建tensorrt engine。因为模型的输入shape为(batch, 3, height, width)，动态的height与width会遇到与图像分类模型相同的问题，可以按照上面的方法解决。除此之外还遇到如下所示Reshape算子维度相关的问题，根据报错信息可以看出，tensorrt中的Reshape算子只能将输入reshape成0维或1维tensor，但现在却想要输出一个2维tensor，tensorrt目前还不支持。
 ```
-[06/12/2022-14:41:28] [E] Error[4]: [shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2,1])
+[06/12/2022-14:41:28] [E] Error[4]: [shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2])
 [06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:780: While parsing node number 349 [Pad -> "754"]:
 [06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:781: --- Begin node ---
 [06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:782: input: "689"
@@ -135,9 +135,18 @@ attribute {
 [06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:783: --- End node ---
 [06/12/2022-14:41:28] [E] [TRT] parsers/onnx/ModelImporter.cpp:785: ERROR: parsers/onnx/ModelImporter.cpp:179 In function parseGraph:
 [6] Invalid Node - Pad_342
-[shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2,1])
+[shuffleNode.cpp::symbolicExecute::387] Error Code 4: Internal Error (Reshape_331: IShuffleLayer applied to shape tensor must have 0 or 1 reshape dimensions: dimensions were [-1,2])
 ```
+这个问题有两种可能的解决方案，要么写一个支持2维Reshap的plugin，要么修改计算图以消除2维Reshape操作。这里我们选择修改计算图。观察出问题的Reshape算子，可以发现它的输入是一个包含8个元素的1维tensor，这个tensor被reshape成(4,2)以后，再进行Slice和Transpose操作，最后再被reshape成一个shape为(8,)的
+1维tensor。
 
+观察Slice和Transpose操作的参数，我们可以推理得到二者的输出。假设第一个Reshape操作的输出x是((0,1), (2,3), (4,5), (6,7))，Slice是在第0维上做了一个逆序操作，它的输出相当于x[::-1, :]，即((6,7), (4,5), (2,3), (0,1))。而Transpose则是交换x的第0维和第1维，即它的输出为((6,4,2,0), (7,5,3,1))，这个tensor会被reshape成1维再输出给下游算子。
+
+![](./figures/onnx_reshape_before.png)
+
+通过上述分析可知，我们能够把Reshape -> Slice -> Transpose -> Reshape这4个算子替换成2个Slice后面再接一个Concat，其中两个Slice的输出分别是(6,4,2,0)和(7,5,3,1)，然后我们在第0维上做一次Concat操作，就能得到与上面计算图相同的输出，修改完的计算图如下所示。
+
+![](./figures/onnx_reshape_after.png)
 
 ## 优化过程
 ---
