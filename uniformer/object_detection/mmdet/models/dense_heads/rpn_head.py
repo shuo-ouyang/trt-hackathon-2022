@@ -1,5 +1,6 @@
 import copy
 import warnings
+import os
 
 import torch
 import torch.nn as nn
@@ -8,9 +9,46 @@ from mmcv import ConfigDict
 from mmcv.cnn import normal_init
 from mmcv.ops import batched_nms
 
+
 from ..builder import HEADS
 from .anchor_head import AnchorHead
 from .rpn_test_mixin import RPNTestMixin
+
+
+def get_k_for_topk(k, size):
+    """Get k of TopK for onnx exporting.
+
+    The K of TopK in TensorRT should not be a Tensor, while in ONNX Runtime
+      it could be a Tensor.Due to dynamic shape feature, we have to decide
+      whether to do TopK and what K it should be while exporting to ONNX.
+    If returned K is less than zero, it means we do not have to do
+      TopK operation.
+
+    Args:
+        k (int or Tensor): The set k value for nms from config file.
+        size (Tensor or torch.Size): The number of elements of \
+            TopK's input tensor
+    Returns:
+        tuple: (int or Tensor): The final K for TopK.
+    """
+    ret_k = -1
+    if k <= 0 or size <= 0:
+        return ret_k
+    if torch.onnx.is_in_onnx_export():
+        is_trt_backend = os.environ.get('ONNX_BACKEND') == 'TensorRT'
+        if is_trt_backend:
+            # TensorRT does not support dynamic K with TopK op
+            if 0 < k < size:
+                ret_k = k
+        else:
+            # Always keep topk op for dynamic input in onnx for ONNX Runtime
+            ret_k = torch.where(k < size, k, size)
+    elif k < size:
+        ret_k = k
+    else:
+        # ret_k is -1
+        pass
+    return ret_k
 
 
 @HEADS.register_module()
@@ -150,8 +188,9 @@ class RPNHead(RPNTestMixin, AnchorHead):
                     # sort op will be converted to TopK in onnx
                     # and k<=3480 in TensorRT
                     scores_shape = torch._shape_as_tensor(scores)
-                    nms_pre = torch.where(scores_shape[1] < nms_pre_tensor,
-                                          scores_shape[1], nms_pre_tensor)
+                    # nms_pre = torch.where(scores_shape[1] < nms_pre_tensor,
+                    #                       scores_shape[1], nms_pre_tensor)
+                    nms_pre = get_k_for_topk(nms_pre_tensor, scores_shape[1])
                     _, topk_inds = scores.topk(nms_pre)
                     batch_inds = torch.arange(batch_size).view(
                         -1, 1).expand_as(topk_inds)
@@ -176,8 +215,8 @@ class RPNHead(RPNTestMixin, AnchorHead):
                     batch_size,
                     scores.size(1),
                 ),
-                                idx,
-                                dtype=torch.long))
+                    idx,
+                    dtype=torch.long))
 
         batch_mlvl_scores = torch.cat(mlvl_scores, dim=1)
         batch_mlvl_anchors = torch.cat(mlvl_valid_anchors, dim=1)

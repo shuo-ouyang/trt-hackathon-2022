@@ -12,7 +12,7 @@ cfg_file = '../exp/mask_rcnn_3x_ms_hybrid_small/config.py'
 
 model = init_detector(cfg_file, ckpt_file, device=device)
 
-res, data = inference_detector(model, '/mnt/e/code-repos/UniFormer/object_detection/demo/demo.jpg')
+res, data = inference_detector(model, './demo.jpg')
 
 img = data['img']
 img_meta = data['img_metas'][0]
