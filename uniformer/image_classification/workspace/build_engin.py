@@ -1,6 +1,6 @@
 import os
 import numpy as np
-# from cuda import cudart
+from cuda import cudart
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -13,7 +13,7 @@ so_files = ['../../../plugin/LayerNormPlugin/LayerNorm.so']
 
 os.system("rm -rf  *.plan")
 np.set_printoptions(precision=4, linewidth=200, suppress=True)
-# cudart.cudaDeviceSynchronize()
+cudart.cudaDeviceSynchronize()
 
 logger = trt.Logger(trt.Logger.WARNING)
 trt.init_libnvinfer_plugins(logger, '')
@@ -35,8 +35,8 @@ else:
     config.set_tactic_sources(1 << int(trt.TacticSource.CUBLAS) |
                               1 << int(trt.TacticSource.CUBLAS_LT) |
                               1 << int(trt.TacticSource.CUDNN))
-    config.set_flag(trt.BuilderFlag.FP16)
-    config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+    # config.set_flag(trt.BuilderFlag.FP16)
+    # config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
     config.clear_flag(trt.BuilderFlag.TF32)
     # config.set_flag(trt.BuilderFlag.INT8)
     # config.int8_calibrator = EncoderEntropyCalibrator(calib_data_path, cache_file, 1)
@@ -54,14 +54,14 @@ else:
             exit()
         print("Succeeded parsing ONNX file!")
 
-    for i in range(network.num_layers):
-        layer = network.get_layer(i)
-        if str(layer.name).startswith('LayerNorm'):
-            layer.precision = trt.DataType.FLOAT
+    # for i in range(network.num_layers):
+    #     layer = network.get_layer(i)
+    #     if str(layer.name).startswith('LayerNorm'):
+    #         layer.precision = trt.DataType.FLOAT
 
     input = network.get_input(0)
 
-    profile.set_shape(input.name, (1, 3, 224, 224), (4, 3, 224, 224), (16, 3, 224, 224))
+    profile.set_shape(input.name, (1, 3, 224, 224), (32, 3, 224, 224), (64, 3, 224, 224))
 
     # calib_profile.set_shape(input.name, (1, 3, 224, 224), (4, 3, 224, 224), (16, 3, 224, 224))
 

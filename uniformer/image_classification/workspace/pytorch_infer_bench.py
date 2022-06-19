@@ -1,4 +1,4 @@
-from PIL import Image
+
 import os
 import torch
 import torch.nn.functional as F
@@ -39,7 +39,7 @@ def evaluate(data_loader, model, device):
     criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Test:'
+    header = 'PyTorch: '
 
     # switch to evaluation mode
     model.eval()
@@ -61,31 +61,32 @@ def evaluate(data_loader, model, device):
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
+    print('PyTorch: * Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-device = 'cuda'
-model_path = './uniformer_small_in1k.pth'
-model = uniformer_small()
-state_dict = torch.load(model_path)
-model.load_state_dict(state_dict['model'])
+if __name__ == '__main__':
+    device = 'cuda'
+    model_path = './uniformer_small_in1k.pth'
+    model = uniformer_small()
+    state_dict = torch.load(model_path)
+    model.load_state_dict(state_dict['model'])
 
-model = model.to(device)
-model.eval()
+    model = model.to(device)
+    model.eval()
 
-transform = build_transform()
-dataset, _ = build_dataset('../../../data', transform)
-sampler = torch.utils.data.SequentialSampler(dataset)
-data_loader_val = torch.utils.data.DataLoader(
-    dataset, sampler=sampler,
-    batch_size=int(32),
-    num_workers=1,
-    pin_memory=True,
-    drop_last=False,
-    persistent_workers=True
-)
-test_stats = evaluate(data_loader_val, model, device)
-print(f"Accuracy of the network on the {len(dataset)} test images: {test_stats['acc1']:.1f}%")
+    transform = build_transform()
+    dataset, _ = build_dataset('/imagenet/val', transform)
+    sampler = torch.utils.data.SequentialSampler(dataset)
+    data_loader_val = torch.utils.data.DataLoader(
+        dataset, sampler=sampler,
+        batch_size=int(32),
+        num_workers=1,
+        pin_memory=True,
+        drop_last=False,
+        persistent_workers=True
+    )
+    test_stats = evaluate(data_loader_val, model, device)
+    print(f"Accuracy of the network on the {len(dataset)} test images: {test_stats['acc1']:.1f}%")
