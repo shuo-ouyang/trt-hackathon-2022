@@ -7,6 +7,7 @@ from torchvision.datasets.folder import ImageFolder
 from imagenet_class_index import imagenet_classnames
 import utils
 from timm.utils import accuracy
+import numpy as np
 
 import sys
 sys.path.append('../')
@@ -81,12 +82,14 @@ if __name__ == '__main__':
     dataset, _ = build_dataset('/imagenet/val', transform)
     sampler = torch.utils.data.SequentialSampler(dataset)
     data_loader_val = torch.utils.data.DataLoader(
-        dataset, sampler=sampler,
-        batch_size=int(32),
+        dataset,
+        sampler=sampler,
+        batch_size=int(1),
         num_workers=1,
         pin_memory=True,
         drop_last=False,
-        persistent_workers=True
+        persistent_workers=True,
     )
+    # CustomQKVToContextPluginDynamic
     test_stats = evaluate(data_loader_val, model, device)
     print(f"Accuracy of the network on the {len(dataset)} test images: {test_stats['acc1']:.1f}%")

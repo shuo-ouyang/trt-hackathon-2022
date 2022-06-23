@@ -5,7 +5,7 @@ import numpy as np
 import ctypes
 import torch
 from timm.utils import accuracy
-from pytorch_infer_bench import build_dataset, build_transform
+from uniformer.image_classification.workspace.test_pytorch_accuracy import build_dataset, build_transform
 from utils import MetricLogger
 
 plan_file = './uf.plan'
@@ -14,6 +14,7 @@ logger = trt.Logger(trt.Logger.WARNING)
 trt.init_libnvinfer_plugins(logger, '')
 
 ctypes.cdll.LoadLibrary('../../../plugin/LayerNormPlugin/LayerNorm.so')
+ctypes.cdll.LoadLibrary('../../../plugin/GeluPlugin/Gelu.so')
 
 if os.path.isfile(plan_file):
     with open(plan_file, 'rb') as f:
@@ -33,7 +34,7 @@ nbChannel = 3
 height = 224
 width = 224
 
-batch_size = 32
+batch_size = 16
 
 context.set_binding_shape(0, (batch_size, nbChannel, height, width))
 
