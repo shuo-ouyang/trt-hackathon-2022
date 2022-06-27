@@ -34,7 +34,7 @@ cd plugins/GeluPlugin && make clean && make all
 
 #### 下载或生成校准数据集
 
-模型可以[点击这里](https://drive.google.com/file/d/16wjfeyqQFZ2x9W91EXf0Py1bfv4Fydfr/view?usp=sharing)进行下载。
+模型可以[点击这里](https://drive.google.com/file/d/1-uepH3Q3BhTmWU6HK-sGAGQC_MpfIiPD/view?usp=sharing)进行下载。
 
 可以点击[此链接](https://pan.baidu.com/s/1quVHc52-nUNmEvYbMl7zSw)（提取码：2191）下载校准和测试数据集，或者自己在imagenet validataion上构建校准数据集。校准数据集需要存放在`/workspace/calibration`目录下。
 
