@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cub/cub.cuh>
+#include <cuda_fp16.h>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -22,6 +23,55 @@
 
 #define DEBUG_FUNC()                                                                               \
   {}
+
+#define ALIGN_TO(X, Y) (CEIL_DIVIDE(X, Y) * (Y))
+
+inline void check(cudaError_t ret, int line) {
+  if (ret != cudaSuccess) {
+    std::cerr << "CUDA Error: " << cudaGetErrorString(ret) << ", line: " << line << std::endl;
+  }
+}
+
+#define CHECK(_x) check((_x), __LINE__)
+
+template <int VPT>
+struct BytesToType;
+
+template <>
+struct BytesToType<2> {
+  using type = uint16_t;
+};
+template <>
+struct BytesToType<4> {
+  using type = uint32_t;
+};
+template <>
+struct BytesToType<8> {
+  using type = uint64_t;
+};
+template <>
+struct BytesToType<16> {
+  using type = float4;
+};
+
+template <int Bytes>
+__device__ inline void copy(const void* local, void* data) {
+  using T = typename BytesToType<Bytes>::type;
+
+  const T* in = static_cast<const T*>(local);
+  T* out      = static_cast<T*>(data);
+  *out        = *in;
+}
+
+template <typename T>
+using kvp = cub::KeyValuePair<T, T>;
+
+template <typename T>
+struct mySum {
+  __host__ __device__ __forceinline__ kvp<T> operator()(const kvp<T>& a, const kvp<T>& b) const {
+    return kvp<T>(a.key + b.key, a.value + b.value);
+  }
+};
 
 namespace {
 static const char* PLUGIN_NAME{"LayerNorm"};
@@ -81,29 +131,23 @@ public:
                                  const PluginTensorDesc* inOut,
                                  int32_t nbInputs,
                                  int32_t nbOutputs) noexcept override {
-    DEBUG_FUNC();
-    if (inOut[pos].format != TensorFormat::kLINEAR) {
-      return false;
-    }
 
-    bool res = false;
     switch (pos) {
     case 0:
-      res = inOut[pos].type == DataType::kFLOAT or inOut[pos].type == DataType::kHALF;
-      break;
+      return (inOut[0].type == DataType::kFLOAT || inOut[0].type == DataType::kHALF) &&
+                 inOut[0].format == TensorFormat::kLINEAR ||
+             inOut[0].type == DataType::kINT8 && (inOut[0].format == TensorFormat::kCHW4 ||
+                                                  inOut[0].format == TensorFormat::kCHW32);
     case 1:
-      res = inOut[pos].type == DataType::kFLOAT;
-      break;
     case 2:
-      res = inOut[pos].type == DataType::kFLOAT;
-      break;
+      return inOut[pos].type == inOut[0].type ||
+             inOut[0].type == DataType::kINT8 && inOut[pos].type == DataType::kHALF;
     case 3:
-      res = inOut[pos].type == DataType::kFLOAT or inOut[pos].type == DataType::kHALF;
-      break;
-    default: // should NOT be here
-      break;
+      return inOut[pos].type == inOut[0].type && inOut[pos].format == inOut[0].format;
+    default: // should NOT be here!
+      return false;
     }
-    return res;
+    return false;
   }
 
   DataType getOutputDataType(int outputIndex,

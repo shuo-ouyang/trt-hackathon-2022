@@ -15,8 +15,11 @@ init_value = 1e-6
 
 
 class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+    def __init__(
+            self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.,
+            flat_fc=False):
         super().__init__()
+        self.flat_fc = flat_fc
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features)
@@ -25,11 +28,19 @@ class Mlp(nn.Module):
         self.drop = nn.Dropout(drop)
 
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
+        B, N, C = x.shape
+        if self.flat_fc:
+            x = self.fc1(x.flatten(0, 1))
+            x = self.act(x)
+            x = self.drop(x)
+            x = self.fc2(x)
+            x = self.drop(x).reshape(B, N, C)
+        else:
+            x = self.fc1(x)
+            x = self.act(x)
+            x = self.drop(x)
+            x = self.fc2(x)
+            x = self.drop(x).reshape(B, N, C)
         return x
 
 
@@ -53,8 +64,11 @@ class CMlp(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(
+            self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
+            flat_fc=False):
         super().__init__()
+        self.flat_fc = flat_fc
         self.num_heads = num_heads
         head_dim = dim // num_heads
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
@@ -67,8 +81,12 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads,
-                                  C // self.num_heads).permute(2, 0, 3, 1, 4)
+        if self.flat_fc:
+            qkv = self.qkv(x.flatten(0, 1)).reshape(B, N, 3, self.num_heads,
+                                                    C // self.num_heads).permute(2, 0, 3, 1, 4)
+        else:
+            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads,
+                                      C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
@@ -106,20 +124,21 @@ class CBlock(nn.Module):
 
 class SABlock(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0.,
-                 attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+                 attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, flat_fc=False):
         super().__init__()
+        self.flat_fc = flat_fc
         self.pos_embed = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
             dim,
             num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            attn_drop=attn_drop, proj_drop=drop)
+            attn_drop=attn_drop, proj_drop=drop, flat_fc=self.flat_fc)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
-                       act_layer=act_layer, drop=drop)
+                       act_layer=act_layer, drop=drop, flat_fc=self.flat_fc)
         global layer_scale
         self.ls = layer_scale
         if self.ls:
@@ -218,7 +237,8 @@ class UniFormer(nn.Module):
             self, depth=[3, 4, 8, 3],
             img_size=224, in_chans=3, num_classes=1000, embed_dim=[64, 128, 320, 512],
             head_dim=64, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
-            drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None, conv_stem=False):
+            drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None, conv_stem=False,
+            flat_fc=False):
         """
         Args:
             depth (list): depth of each stage
@@ -238,6 +258,7 @@ class UniFormer(nn.Module):
             conv_stem (bool): whether use overlapped patch stem
         """
         super().__init__()
+        self.flat_fc = flat_fc
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
@@ -287,7 +308,7 @@ class UniFormer(nn.Module):
                 qk_scale=qk_scale, drop=drop_rate,
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[i + depth[0] + depth[1]],
-                norm_layer=norm_layer) for i in range(depth[2])])
+                norm_layer=norm_layer, flat_fc=self.flat_fc) for i in range(depth[2])])
         self.blocks4 = nn.ModuleList([
             SABlock(
                 dim=embed_dim[3],
@@ -296,7 +317,7 @@ class UniFormer(nn.Module):
                 qk_scale=qk_scale, drop=drop_rate,
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[i + depth[0] + depth[1] + depth[2]],
-                norm_layer=norm_layer) for i in range(depth[3])])
+                norm_layer=norm_layer, flat_fc=self.flat_fc) for i in range(depth[3])])
         self.norm = nn.BatchNorm2d(embed_dim[-1])
 
         # Representation layer
@@ -354,17 +375,18 @@ class UniFormer(nn.Module):
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = x.flatten(2).mean(-1)
+        x = x.flatten(2)
+        x = x.mean(-1)
         x = self.head(x)
         return x
 
 
 @register_model
-def uniformer_small(pretrained=True, **kwargs):
+def uniformer_small(pretrained=True, flat_fc=False, **kwargs):
     model = UniFormer(
         depth=[3, 4, 8, 3],
         embed_dim=[64, 128, 320, 512], head_dim=64, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), flat_fc=False, **kwargs)
     model.default_cfg = _cfg()
     return model
 
@@ -390,11 +412,11 @@ def uniformer_small_plus_dim64(pretrained=True, **kwargs):
 
 
 @register_model
-def uniformer_base(pretrained=True, **kwargs):
+def uniformer_base(pretrained=True, flat_fc=False, **kwargs):
     model = UniFormer(
         depth=[5, 8, 20, 7],
         embed_dim=[64, 128, 320, 512], head_dim=64, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), flat_fc=False, **kwargs)
     model.default_cfg = _cfg()
     return model
 
