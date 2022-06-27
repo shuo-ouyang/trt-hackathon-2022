@@ -11,22 +11,7 @@ import numpy as np
 import sys
 sys.path.append('../')
 from uniformer.models import uniformer_small
-
-
-def build_dataset(root, transform):
-    dataset = ImageFolder(root, transform=transform)
-    nb_classes = 1000
-    return dataset, nb_classes
-
-
-def build_transform():
-    transform = T.Compose([
-        T.Resize(224, interpolation=3),
-        T.CenterCrop(224),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    return transform
+from dataset import build_dataset, build_transform
 
 
 @torch.no_grad()
@@ -77,23 +62,14 @@ if __name__ == '__main__':
     sampler = torch.utils.data.SequentialSampler(dataset)
     data_loader_val = torch.utils.data.DataLoader(
         dataset,
-        # sampler=sampler,
+        sampler=sampler,
         batch_size=int(32),
         num_workers=1,
         pin_memory=True,
         drop_last=False,
         persistent_workers=True,
-        shuffle=True,
+        shuffle=False,
     )
-
-    # cnt = 0
-    # for idx, (images, labels) in enumerate(data_loader_val):
-    #     images = images.cpu().numpy()
-    #     labels = labels.cpu().numpy()
-    #     np.savez(f"./calibration/calib-{idx}", images=images, labels=labels)
-    #     cnt += images.shape[0]
-    #     if cnt >= 5120:
-    #         break
 
     test_stats = evaluate(data_loader_val, model, device)
     print(f"Accuracy of the network on the {len(dataset)} test images: {test_stats['acc1']:.1f}%")

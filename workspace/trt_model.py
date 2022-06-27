@@ -10,10 +10,10 @@ logger = trt.Logger(trt.Logger.WARNING)
 ctypes.cdll.LoadLibrary('../plugins/LayerNormPlugin/LayerNorm.so')
 ctypes.cdll.LoadLibrary('../plugins/GeluPlugin/Gelu.so')
 layer_scale = False
-cache_file = './static_bs{}_int8.cache'
+cache_file = './static_bs16_int8.cache'
 calib_data_path = './calibration'
 C, H, W = 3, 224, 224
-os.system('rm ./static_int8.cache')
+os.system('rm ./static_bs16_int8.cache')
 use_fp16 = True
 use_int8 = False
 
@@ -432,8 +432,7 @@ if __name__ == '__main__':
     state_dict = torch.load(model_path)
     params = {k: v.detach().cpu().numpy() for k, v in state_dict['model'].items()}
 
-    for B in ( 2, 3, 4, 8, 16, 32):
-    # for B in (1,):
+    for B in (1, 2, 3, 4, 8, 16, 32):
         builder = trt.Builder(logger)
         network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
         input = network.add_input('input', trt.float32, [B, C, H, W])
@@ -447,6 +446,9 @@ if __name__ == '__main__':
             config.set_flag(trt.BuilderFlag.FP16)
             typstr = 'fp16'
         if use_int8:
+            if B != 16:
+                print("[WARNING] model built from trt api only support bs=16 with int8 mode!!!")
+                continue
             config.set_flag(trt.BuilderFlag.INT8)
             config.int8_calibrator = EntropyCalibrator(calib_data_path, cache_file.format(B), 32)
             calib_profile = builder.create_optimization_profile()
@@ -458,7 +460,6 @@ if __name__ == '__main__':
         profile = builder.create_optimization_profile()
         profile.set_shape(input.name, (B, 3, 224, 224), (B, 3, 224, 224), (B, 3, 224, 224))
         config.add_optimization_profile(profile)
-
 
         engine_str = builder.build_serialized_network(network, config)
         with open(f'./uf_static_bs{B}_{typstr}.plan', 'wb') as f:

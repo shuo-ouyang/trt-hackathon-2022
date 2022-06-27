@@ -7,6 +7,9 @@ import torch
 from timm.utils import accuracy
 from test_pytorch_accuracy import build_dataset, build_transform
 from utils import MetricLogger
+import argparse
+
+
 
 plan_file = './uf_static_bs32_fp16.plan'
 

@@ -11,10 +11,13 @@ import tensorrt as trt
 import sys
 sys.path.append('../')
 from uniformer.models import uniformer_small
+import argparse
 
-data_file = "./data/"
-# plan_file = './uf_static_bs{}_int8.plan'
-plan_file = './plans/uf_int8_bn_fp32_2.plan'
+parser = argparse.ArgumentParser()
+parser.add_argument('--engine', type=str, default='./uf.plan', help='trt engine file want to be tested')
+parser.add_argument('--data', type=str, default='./data/', help='test data path')
+args = parser.parse_args()
+
 
 logger = trt.Logger(trt.Logger.WARNING)
 trt.init_libnvinfer_plugins(logger, '')
@@ -62,13 +65,18 @@ def test_pytorch(images, use_fp16=False):
 
 def test_tensorrt(engine, images, labels):
     context = engine.create_execution_context()
+    input_shape = context.get_binding_shape(0)
+    if input_shape[0] != -1 and input_shape[0] != images.shape[0]:
+        print(
+            f"[WANRING] engine batch({input_shape[0]}) is not dynamic and mismatch with inpu({images.shape[0]}), skip this round!!!")
+        return None, None
     nb_profile = engine.num_optimization_profiles
     nb_input = np.sum([engine.binding_is_input(i) for i in range(engine.num_bindings)])
     nb_output = engine.num_bindings - nb_input
     host_buf = [images.reshape(-1).astype(np.float32)]
     nb_input //= nb_profile
     nb_output //= nb_profile
-    
+
     if nb_profile == 1:
         bind_offset = 0
     else:
@@ -80,9 +88,9 @@ def test_tensorrt(engine, images, labels):
             bind_offset = nb_profile
             context.set_optimization_profile_async(1, 0)
             cudart.cudaStreamSynchronize(0)
-    
+
     context.set_binding_shape(bind_offset, images.shape)
-    
+
     for i in range(nb_input, nb_input + nb_output):
         i += bind_offset
         host_buf.append(np.ones(context.get_binding_shape(i),
@@ -110,7 +118,7 @@ def test_tensorrt(engine, images, labels):
     stop = time_ns()
     time_per_run = (stop - start) / (30 * 1000 * 1000)
 
-    cudart.cudaMemcpy(host_buf[-1].ctypes.data, dev_buf[bind_offset+1], host_buf[-1].nbytes,
+    cudart.cudaMemcpy(host_buf[-1].ctypes.data, dev_buf[bind_offset + 1], host_buf[-1].nbytes,
                       cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost)
 
     for dbuf in dev_buf:
@@ -120,17 +128,17 @@ def test_tensorrt(engine, images, labels):
 
 
 if __name__ == '__main__':
-    # engine = load_engine(plan_file)
+    engine = load_engine(args.engine)
     for i in (1, 2, 3, 4, 8, 16, 32):
-    # for i in (16,):
-        ioFile = os.path.join(data_file, f"bs{i}.npz")
+        ioFile = os.path.join(args.data, f"bs{i}.npz")
         ioData = np.load(ioFile)
         images = ioData['image']
         labels = ioData['label']
 
         torch_output, torch_time = test_pytorch(images)
-        engine = load_engine(plan_file.format(i))
         trt_output, trt_time = test_tensorrt(engine, images, labels)
+        if trt_output is None:
+            continue
         speedup = (torch_time - trt_time) / torch_time
         print(f"batch size: {images.shape[0]:2d}, ", end='')
         print(f"torch per run: {torch_time:6.3f}, trt per run: {trt_time:6.3f}, ", end='')

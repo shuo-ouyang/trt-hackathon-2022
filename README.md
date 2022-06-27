@@ -10,8 +10,55 @@
 代码：https://github.com/Sense-X/UniFormer
 ### 优化效果
 
+相比pytorch原生模型，在尽量保证精度的同时，经过优化后的tensorrt模型在small batch size的情况下降低了至多80%的推理延迟，在large batch size的情况下推理延迟也能降低40%。
+
 ### 运行步骤
 
+#### 拉取docker image
+```
+docker pull registry.cn-hangzhou.aliyuncs.com/trt2022/trt-8.4-ga:latest
+```
+
+#### 下载代码并安装依赖
+```
+git clone https://github.com/shuo-ouyang/trt-hackathon-2022.git
+cd trt-hackathon-2022
+pip install -r requirements.txt
+```
+
+#### 编译plugin
+```
+cd plugins/LayerNormPlugin && make clean && make all
+cd plugins/GeluPlugin && make clean && make all
+```
+
+#### 下载或生成校准数据集
+
+可以在[此处](https://pan.baidu.com/s/1yWuaPhPUKOrT247JUolMTQ)（提取码：ld41）下载校准和测试数据集，或者自己在imagenet validataion上构建校准数据集。校准数据集需要存放在`/workspace/calibration`目录下。
+
+生成校准数据集
+```
+cd /workspace && mkdir calibration
+python gen_calib_data.py --imgnet-val your-imagenet-val-path
+```
+
+#### onnx2trt模型构建
+```
+python export_onnx.py --use-fp16
+python process_onnx.py --use-fp16 --use-ln --use-gelu --onnx uf_small.onnx --output uf_opt.onnx
+python onnx2trt.py
+```
+
+#### trt api模型构建
+我们通过trt api实现的模型仅支持静态shape，所以trt_model.py会给不同batch size都构建一个engine。
+```
+python trt_model.py
+```
+
+#### 测试pytorch/tensorrt模型性能
+```
+python test_speedup.py --engine uf.plan
+```
 
 ## 原始模型
 ---
@@ -165,14 +212,18 @@ PTQ的关键在于校准数据集的选择。这里我们在validation数据集�
 | 3          |      4.314      |      3.471      |       3.274       |     3.894      |    **2.644**  |        X        |
 | 4          |      4.874      |      3.834      |       3.538       |     4.768      |    **3.105**  |        X        |
 | 8          |      8.376      |      6.337      |       5.756       |     8.349      |    **5.472**  |        X        |
-| 16         |      16.408     |     12.583      |       12.038      |     16.167     |    **10.022**  |      13.219     |
-| 32         |      31.691     |     24.473      |       23.227      |     29.737     |    **19.470**  |        X        |
+| 16         |      16.408     |     12.583      |       12.038      |     16.167     |   **10.022**  |      13.219     |
+| 32         |      31.691     |     24.473      |       23.227      |     29.737     |   **19.470**  |        X        |
 
 
 下表是tensorrt模型INT8模式下的Top1精度，可以看到，相比于FP32/FP16，INT8模型掉了大概2个点左右，还算是在可以接受的范围内吧。
 | pytorch | onnx2trt | trt_api |
 |:-------:|:--------:|:-------:|
 |    X    |  81.072  |  76.208 |
+
+## 心得与体会
+---
+用tensorrt api搭模型真有意思，争取后面把针对目标检测任务的uniformer也搭出来。
 
 ## References
 >[1] https://bbs.huaweicloud.com/blogs/327738
